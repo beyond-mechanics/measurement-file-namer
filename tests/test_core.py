@@ -38,3 +38,78 @@ def test_plan_never_overwrites_and_execute_logs(tmp_path):
     assert (out / "2-500-0.65-1_NRX.csv").read_text() == "existing"
     assert (src / "a.csv").exists()  # 既定はコピー
     assert "2-500-0.65-1_NRX_2.csv" in (out / "rename_log.csv").read_text(encoding="utf-8-sig")
+
+
+# ---- 開いている Excel（COM）の代わりに模擬オブジェクトで確認
+class _FakeApp:
+    def __init__(self):
+        self.DisplayAlerts = True
+        self.ActiveWorkbook = None
+        self.saved = []
+
+
+class _FakeSheet:
+    def __init__(self, wb):
+        self.wb = wb
+
+    def Copy(self):
+        self.wb.Application.ActiveWorkbook = _FakeWB("Sheet1", self.wb.Application)
+
+    def Range(self, _):
+        class R:
+            Value = (("KEYENCE WAVE LOGGER X", None), (1.0, 2.0))
+        return R()
+
+
+class _FakeWB:
+    def __init__(self, name, app=None):
+        self.Name, self.Path, self.Application = name, "", app or _FakeApp()
+        self.closed = False
+
+    def Worksheets(self, _):
+        return _FakeSheet(self)
+
+    def SaveAs(self, path, fmt):
+        assert self.Application.DisplayAlerts is False
+        Path(path).write_text(f"fmt={fmt}")
+        self.Application.saved.append((Path(path).name, fmt))
+
+    def Close(self, _):
+        self.closed = True
+
+
+def test_open_excel_saved_with_rule_and_csv(tmp_path):
+    from sokutei_namer import guess_instrument_wb
+    wb = _FakeWB("Book1")
+    assert guess_instrument_wb(wb) == "NRX"
+    items = [Item(src=Path("Book1"), inst="NRX", wb=wb)]
+    pairs = plan(items, DEFAULT_TEMPLATE, COMMON, tmp_path, xl_ext=".xlsx", also_csv=True)
+    assert pairs[0][1].name == "2-500-0.65-1_NRX.xlsx"
+    assert items[0].csv_dst.name == "2-500-0.65-1_NRX.csv"
+    ok, errs = execute(pairs, close_excel=True)
+    assert ok == 1 and not errs, errs
+    assert wb.Application.saved == [("2-500-0.65-1_NRX.xlsx", 51), ("2-500-0.65-1_NRX.csv", 6)]
+    assert wb.Application.DisplayAlerts is True  # 元に戻す
+    assert wb.closed
+    log = (tmp_path / "rename_log.csv").read_text(encoding="utf-8-sig")
+    assert "[開いているExcel] Book1" in log and "excel-csv" in log
+
+
+def test_open_excel_xlsm_and_manual_name(tmp_path):
+    wb = _FakeWB("Book2")
+    it = Item(src=Path("Book2"), inst="NRX", wb=wb, new_name="特別.xlsx", manual=True)
+    pairs = plan([it], DEFAULT_TEMPLATE, COMMON, tmp_path, xl_ext=".xlsm")
+    assert pairs[0][1].name == "特別.xlsm" and it.csv_dst is None
+
+
+def test_free_name_mode(tmp_path):
+    from sokutei_namer import FREE_TEMPLATE, FREE_TEMPLATE_NOINST
+    f = dict(COMMON, name="アルミ 5000rpm/びびり有", inst="NRX", memo="")
+    assert build_name(FREE_TEMPLATE, f, Path("Book1.xlsx")) == "アルミ 5000rpm_びびり有_NRX.xlsx"
+    assert build_name(FREE_TEMPLATE_NOINST, f, Path("a.CSV")) == "アルミ 5000rpm_びびり有.csv"
+    # 名前が空なら元の名前を使う
+    assert build_name(FREE_TEMPLATE, dict(f, name="", inst=""), Path("data.csv")) == "data.csv"
+    # 同じ名前が2つあっても上書きしない
+    items = [Item(src=Path("Book1"), inst="", wb=object()), Item(src=Path("Book2"), inst="", wb=object())]
+    pairs = plan(items, FREE_TEMPLATE, dict(f, inst=""), tmp_path)
+    assert [d.name for _, d in pairs] == ["アルミ 5000rpm_びびり有.xlsx", "アルミ 5000rpm_びびり有_2.xlsx"]
