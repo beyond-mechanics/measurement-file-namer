@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-計測ファイル一括命名・保存ツール（試作 v0.1）
+計測ファイル一括命名・保存ツール（v0.2）
 
 1回の試験で取れた .csv / .xlsm / .xlsx / .dwd などを一度に並べ、
 共通の試験条件（試験No・周波数・電圧・回数・日付）と機器タグから
@@ -10,6 +10,8 @@
   * 同名ファイルがあっても上書きしない（_2, _3 … を付ける）。
   * コピー後にサイズを照合し、保存先に rename_log.csv（元パス→新名）を追記。
   * CSV の先頭数行から機器を推定（KEYENCE / O-Solution / DynoWare）。
+  * 計測直後に「開いたまま・未保存」になっている Excel を一覧から選んで、
+    そのまま命名ルールで保存できる（Windows + pywin32）。
 
 起動: python sokutei_namer.py
 exe化: build_exe.bat を実行（PyInstaller）
@@ -24,12 +26,14 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-APP_TITLE = "計測ファイル一括命名ツール v0.1"
+APP_TITLE = "計測ファイル一括命名ツール v0.2"
 DEFAULT_TEMPLATE = "{test}-{freq}-{volt}-{run}_{inst}"
 INST_PRESETS = ["NRX", "DS5100", "DYNO", "LK", "RP", ""]
 TOKENS_HELP = ("{date} 日付YYYYMMDD / {test} 試験No / {freq} 周波数 / "
                "{volt} 電圧 / {run} 回数 / {inst} 機器 / {memo} メモ / {orig} 元の名前")
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|]')
+# Excel の SaveAs 形式番号（xlOpenXMLWorkbook / xlOpenXMLWorkbookMacroEnabled / xlCSV）
+XL_FORMATS = {".xlsx": 51, ".xlsm": 52, ".csv": 6}
 
 
 # ---------------------------------------------------------------- 命名ロジック
@@ -51,15 +55,20 @@ def guess_instrument(path: Path) -> str:
                     break
                 except UnicodeDecodeError:
                     continue
-            t = text.upper()
-            if "KEYENCE" in t or "NR-X" in t or "WAVE LOGGER" in t:
-                return "NRX"
-            if "O-SOLUTION" in t or "DS-5" in t or "ONO SOKKI" in t or "小野測器" in text:
-                return "DS5100"
-            if "DYNOWARE" in t or "KISTLER" in t:
-                return "DYNO"
+            return _inst_from_text(text)
         except OSError:
             pass
+    return ""
+
+
+def _inst_from_text(text: str) -> str:
+    t = text.upper()
+    if "KEYENCE" in t or "NR-X" in t or "WAVE LOGGER" in t:
+        return "NRX"
+    if "O-SOLUTION" in t or "DS-5" in t or "ONO SOKKI" in t or "小野測器" in text:
+        return "DS5100"
+    if "DYNOWARE" in t or "KISTLER" in t:
+        return "DYNO"
     return ""
 
 
@@ -95,26 +104,116 @@ def unique_dest(dest_dir: Path, name: str, taken: set[str]) -> Path:
 
 @dataclass
 class Item:
-    src: Path
+    src: Path                      # 開いている Excel のときは Path(ブック名)
     inst: str = ""
     memo: str = ""
     new_name: str = ""
     manual: bool = False           # 新しい名前を手で直したか
+    wb: object = None              # 開いている Excel ブック（COM）。ファイルなら None
+    csv_dst: Path | None = None    # Excel から CSV も書き出す先
     extra: dict = field(default_factory=dict)
 
+    @property
+    def label(self) -> str:
+        return f"[開いているExcel] {self.src.name}" if self.wb is not None else str(self.src)
 
-def plan(items: list[Item], template: str, common: dict, dest_dir: Path) -> list[tuple[Item, Path]]:
+
+def plan(items: list[Item], template: str, common: dict, dest_dir: Path,
+         xl_ext: str = ".xlsx", also_csv: bool = False) -> list[tuple[Item, Path]]:
+    """各アイテムの保存先を決める。開いている Excel は xl_ext 形式で保存する。"""
     taken: set[str] = set()
     out = []
     for it in items:
-        if not it.manual:
+        orig = Path(Path(it.src.name).stem + xl_ext) if it.wb is not None else it.src
+        if it.manual:
+            name = it.new_name
+            if it.wb is not None:
+                name = Path(name).stem + xl_ext
+        else:
             f = dict(common, inst=it.inst, memo=it.memo)
-            it.new_name = build_name(template, f, it.src)
-        out.append((it, unique_dest(dest_dir, it.new_name, taken)))
+            name = build_name(template, f, orig)
+        it.new_name = name
+        dst = unique_dest(dest_dir, name, taken)
+        it.csv_dst = None
+        if it.wb is not None and also_csv and xl_ext != ".csv":
+            it.csv_dst = unique_dest(dest_dir, dst.stem + ".csv", taken)
+        out.append((it, dst))
     return out
 
 
-def execute(pairs, move: bool = False, log_name: str = "rename_log.csv", progress=None):
+# ---------------------------------------------------------------- 開いている Excel
+def list_open_workbooks() -> list:
+    """起動中の全 Excel から開いているブックを集める（Windows + pywin32 が必要）。"""
+    import pythoncom
+    import win32com.client
+
+    apps = []
+    try:
+        apps.append(win32com.client.GetActiveObject("Excel.Application"))
+    except Exception:  # noqa: BLE001
+        pass
+    try:  # Excel が複数起動しているときに備えて ROT も見る
+        rot = pythoncom.GetRunningObjectTable()
+        for mk in rot:
+            try:
+                obj = rot.GetObject(mk).QueryInterface(pythoncom.IID_IDispatch)
+                app = win32com.client.Dispatch(obj).Application
+                if "Excel" in str(app.Name):
+                    apps.append(app)
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    out, seen = [], set()
+    for app in apps:
+        try:
+            h = app.Hwnd
+        except Exception:  # noqa: BLE001
+            continue
+        if h in seen:
+            continue
+        seen.add(h)
+        for wb in app.Workbooks:
+            if str(wb.Name).upper().startswith("PERSONAL"):
+                continue
+            out.append(wb)
+    return out
+
+
+def is_unsaved(wb) -> bool:
+    return not str(wb.Path)
+
+
+def guess_instrument_wb(wb) -> str:
+    """1枚目のシート左上から機器を推定。わからなければ NRX（Excel を直接開くのは NR-X 想定）。"""
+    try:
+        vals = wb.Worksheets(1).Range("A1:J10").Value
+        text = " ".join(str(c) for row in (vals or ()) for c in (row or ()) if c is not None)
+        return _inst_from_text(text) or "NRX"
+    except Exception:  # noqa: BLE001
+        return "NRX"
+
+
+def save_workbook(wb, dst: Path, csv_dst: Path | None = None, close: bool = False):
+    """開いているブックを dst に保存（必要なら1枚目シートを CSV にも書き出す）。"""
+    app = wb.Application
+    old = app.DisplayAlerts
+    app.DisplayAlerts = False   # 「互換性」「マクロなし」などの確認を出さない
+    try:
+        wb.SaveAs(str(Path(dst).resolve()), XL_FORMATS[Path(dst).suffix.lower()])
+        if csv_dst is not None:
+            wb.Worksheets(1).Copy()          # 1枚目シートだけの新しいブックができる
+            tmp = app.ActiveWorkbook
+            tmp.SaveAs(str(Path(csv_dst).resolve()), XL_FORMATS[".csv"])
+            tmp.Close(False)
+        if close:
+            wb.Close(False)
+    finally:
+        app.DisplayAlerts = old
+
+
+def execute(pairs, move: bool = False, log_name: str = "rename_log.csv", progress=None,
+            close_excel: bool = False):
     """コピー（または移動）してサイズ照合し、ログを追記。戻り値: (成功数, エラー一覧)"""
     if not pairs:
         return 0, []
@@ -124,6 +223,18 @@ def execute(pairs, move: bool = False, log_name: str = "rename_log.csv", progres
     now = _dt.datetime.now().isoformat(timespec="seconds")
     for n, (it, dst) in enumerate(pairs, 1):
         try:
+            if it.wb is not None:
+                save_workbook(it.wb, dst, it.csv_dst, close=close_excel)
+                if not dst.exists():
+                    raise IOError("Excel で保存できませんでした")
+                rows.append([now, it.label, dst.name, dst.stat().st_size, it.inst, "excel-save"])
+                if it.csv_dst is not None:
+                    rows.append([now, it.label, it.csv_dst.name, it.csv_dst.stat().st_size,
+                                 it.inst, "excel-csv"])
+                ok += 1
+                if progress:
+                    progress(n, len(pairs))
+                continue
             size = it.src.stat().st_size
             shutil.copy2(it.src, dst)
             if dst.stat().st_size != size:
@@ -201,18 +312,51 @@ def main():
     move = tk.BooleanVar(value=False)
     ttk.Checkbutton(dfrm, text="移動（元を消す）", variable=move).pack(side="left", padx=6)
 
+    # --- 開いている Excel の保存形式
+    xfrm = ttk.Frame(root)
+    xfrm.pack(fill="x", padx=8, pady=(4, 0))
+    ttk.Label(xfrm, text="開いているExcelの保存形式").pack(side="left")
+    xl_ext = tk.StringVar(value=".xlsx")
+    ttk.Combobox(xfrm, textvariable=xl_ext, values=list(XL_FORMATS), width=6,
+                 state="readonly").pack(side="left", padx=4)
+    also_csv = tk.BooleanVar(value=True)
+    ttk.Checkbutton(xfrm, text="CSV（1枚目シート）も書き出す", variable=also_csv).pack(side="left", padx=6)
+    close_xl = tk.BooleanVar(value=False)
+    ttk.Checkbutton(xfrm, text="保存後にそのExcelを閉じる", variable=close_xl).pack(side="left", padx=6)
+
+    # 前回の保存先・命名ルールを覚えておく
+    cfg_path = Path.home() / ".sokutei_namer.json"
+    try:
+        import json
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        dest.set(cfg.get("dest", ""))
+        tmpl.set(cfg.get("template", DEFAULT_TEMPLATE))
+        xl_ext.set(cfg.get("xl_ext", ".xlsx"))
+        also_csv.set(cfg.get("also_csv", True))
+    except Exception:  # noqa: BLE001
+        pass
+
+    def save_cfg():
+        try:
+            import json
+            cfg_path.write_text(json.dumps({"dest": dest.get(), "template": tmpl.get(),
+                                            "xl_ext": xl_ext.get(), "also_csv": also_csv.get()},
+                                           ensure_ascii=False), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
     # --- 一覧
     cols = ("src", "inst", "memo", "new")
     tree = ttk.Treeview(root, columns=cols, show="headings", selectmode="extended")
-    for c, t, w in [("src", "元ファイル", 360), ("inst", "機器（ダブルクリックで編集）", 170),
+    for c, t, w in [("src", "元ファイル / 開いているExcel", 360), ("inst", "機器（ダブルクリックで編集）", 170),
                     ("memo", "メモ", 120), ("new", "新しい名前（ダブルクリックで直接編集）", 360)]:
         tree.heading(c, text=t)
         tree.column(c, width=w, anchor="w")
     tree.pack(fill="both", expand=True, padx=8, pady=6)
     if has_dnd:
-        hint = "ここにファイルをドラッグ＆ドロップ、または「ファイル追加」"
+        hint = "計測直後なら「開いているExcelを取り込む」。保存済みファイルはドラッグ＆ドロップ"
     else:
-        hint = "「ファイル追加」で選択（tkinterdnd2 を入れるとドラッグ＆ドロップも可）"
+        hint = "計測直後なら「開いているExcelを取り込む」。保存済みファイルは「ファイル追加」"
     status = tk.StringVar(value=hint)
 
     def dest_dir() -> Path:
@@ -225,18 +369,19 @@ def main():
         return {k: x.get() for k, x in v.items()}
 
     def refresh(*_):
-        pairs = plan(items, tmpl.get(), common(), dest_dir())
+        pairs = plan(items, tmpl.get(), common(), dest_dir(), xl_ext.get(), also_csv.get())
         tree.delete(*tree.get_children())
         for i, (it, dst) in enumerate(pairs):
+            new = dst.name + (f"  ＋ {it.csv_dst.name}" if it.csv_dst else "")
             tree.insert("", "end", iid=str(i),
-                        values=(str(it.src), it.inst, it.memo, dst.name))
+                        values=(it.label, it.inst, it.memo, new))
         status.set(f"{len(items)} 件 → {dest_dir()}")
 
-    for x in list(v.values()) + [tmpl, dest, mkdir_sub]:
+    for x in list(v.values()) + [tmpl, dest, mkdir_sub, xl_ext, also_csv]:
         x.trace_add("write", refresh)
 
     def add_paths(paths):
-        known = {it.src.resolve() for it in items}
+        known = {it.src.resolve() for it in items if it.wb is None}
         for p in paths:
             p = Path(p)
             if p.is_dir():
@@ -246,6 +391,44 @@ def main():
                 items.append(Item(src=p, inst=guess_instrument(p)))
                 known.add(p.resolve())
         refresh()
+
+    def add_excel():
+        try:
+            wbs = list_open_workbooks()
+        except ImportError:
+            messagebox.showerror(APP_TITLE, "pywin32 が入っていません。\n"
+                                 "コマンドプロンプトで  pip install pywin32  を実行してください。")
+            return
+        have = {id(it.wb) for it in items if it.wb is not None}
+        names_in = {str(it.wb.FullName) for it in items if it.wb is not None}
+        wbs = [wb for wb in wbs if str(wb.FullName) not in names_in and id(wb) not in have]
+        if not wbs:
+            messagebox.showinfo(APP_TITLE, "取り込めるExcelが見つかりません。\n"
+                                "計測ソフトがExcelを開いた状態で、もう一度押してください。")
+            return
+        dlg = tk.Toplevel(root)
+        dlg.title("保存するExcelを選ぶ")
+        dlg.transient(root)
+        ttk.Label(dlg, text="未保存のブックに最初からチェックが入っています。").pack(anchor="w", padx=10, pady=(10, 4))
+        checks = []
+        for wb in wbs:
+            unsaved = is_unsaved(wb)
+            var = tk.BooleanVar(value=unsaved)
+            tag = "（未保存）" if unsaved else f"（保存済み: {wb.Path}）"
+            ttk.Checkbutton(dlg, text=f"{wb.Name} {tag}", variable=var).pack(anchor="w", padx=16)
+            checks.append((var, wb))
+
+        def ok():
+            for var, wb in checks:
+                if var.get():
+                    items.append(Item(src=Path(str(wb.Name)), inst=guess_instrument_wb(wb), wb=wb))
+            dlg.destroy()
+            refresh()
+        bf = ttk.Frame(dlg)
+        bf.pack(fill="x", padx=10, pady=10)
+        ttk.Button(bf, text="取り込む", command=ok).pack(side="right")
+        ttk.Button(bf, text="やめる", command=dlg.destroy).pack(side="right", padx=6)
+        dlg.grab_set()
 
     def add_files():
         add_paths(filedialog.askopenfilenames(
@@ -299,11 +482,12 @@ def main():
         if not dest.get().strip():
             messagebox.showwarning(APP_TITLE, "保存先フォルダを選んでください。")
             return
-        pairs = plan(items, tmpl.get(), common(), dest_dir())
-        verb = "移動" if move.get() else "コピー"
+        pairs = plan(items, tmpl.get(), common(), dest_dir(), xl_ext.get(), also_csv.get())
+        verb = "移動" if move.get() else "保存"
         if not messagebox.askokcancel(APP_TITLE, f"{len(pairs)} 件を {dest_dir()} に{verb}します。"):
             return
-        ok, errs = execute(pairs, move=move.get(),
+        save_cfg()
+        ok, errs = execute(pairs, move=move.get(), close_excel=close_xl.get(),
                            progress=lambda n, t: (status.set(f"{verb}中… {n}/{t}"), root.update()))
         msg = f"{ok} 件 {verb}しました。ログ: rename_log.csv"
         if errs:
@@ -317,6 +501,7 @@ def main():
 
     bar = ttk.Frame(root)
     bar.pack(fill="x", padx=8, pady=(0, 8))
+    ttk.Button(bar, text="開いているExcelを取り込む", command=add_excel).pack(side="left", padx=(0, 8))
     ttk.Button(bar, text="ファイル追加", command=add_files).pack(side="left")
     ttk.Button(bar, text="フォルダ追加",
                command=lambda: add_paths([d] if (d := filedialog.askdirectory()) else [])).pack(side="left", padx=4)
