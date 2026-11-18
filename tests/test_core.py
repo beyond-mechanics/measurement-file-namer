@@ -100,3 +100,16 @@ def test_open_excel_xlsm_and_manual_name(tmp_path):
     it = Item(src=Path("Book2"), inst="NRX", wb=wb, new_name="特別.xlsx", manual=True)
     pairs = plan([it], DEFAULT_TEMPLATE, COMMON, tmp_path, xl_ext=".xlsm")
     assert pairs[0][1].name == "特別.xlsm" and it.csv_dst is None
+
+
+def test_free_name_mode(tmp_path):
+    from sokutei_namer import FREE_TEMPLATE, FREE_TEMPLATE_NOINST
+    f = dict(COMMON, name="アルミ 5000rpm/びびり有", inst="NRX", memo="")
+    assert build_name(FREE_TEMPLATE, f, Path("Book1.xlsx")) == "アルミ 5000rpm_びびり有_NRX.xlsx"
+    assert build_name(FREE_TEMPLATE_NOINST, f, Path("a.CSV")) == "アルミ 5000rpm_びびり有.csv"
+    # 名前が空なら元の名前を使う
+    assert build_name(FREE_TEMPLATE, dict(f, name="", inst=""), Path("data.csv")) == "data.csv"
+    # 同じ名前が2つあっても上書きしない
+    items = [Item(src=Path("Book1"), inst="", wb=object()), Item(src=Path("Book2"), inst="", wb=object())]
+    pairs = plan(items, FREE_TEMPLATE, dict(f, inst=""), tmp_path)
+    assert [d.name for _, d in pairs] == ["アルミ 5000rpm_びびり有.xlsx", "アルミ 5000rpm_びびり有_2.xlsx"]

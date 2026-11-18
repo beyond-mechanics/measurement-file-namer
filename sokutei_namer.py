@@ -26,10 +26,12 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-APP_TITLE = "計測ファイル一括命名ツール v0.2"
+APP_TITLE = "計測ファイル一括命名ツール v0.3"
 DEFAULT_TEMPLATE = "{test}-{freq}-{volt}-{run}_{inst}"
 INST_PRESETS = ["NRX", "DS5100", "DYNO", "LK", "RP", ""]
-TOKENS_HELP = ("{date} 日付YYYYMMDD / {test} 試験No / {freq} 周波数 / "
+FREE_TEMPLATE = "{name}_{inst}"      # 「自由な名前」モード（機器名を付ける）
+FREE_TEMPLATE_NOINST = "{name}"
+TOKENS_HELP = ("{name} 自由な名前 / {date} 日付YYYYMMDD / {test} 試験No / {freq} 周波数 / "
                "{volt} 電圧 / {run} 回数 / {inst} 機器 / {memo} メモ / {orig} 元の名前")
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|]')
 # Excel の SaveAs 形式番号（xlOpenXMLWorkbook / xlOpenXMLWorkbookMacroEnabled / xlCSV）
@@ -274,10 +276,30 @@ def main():
     root.geometry("1050x620")
     items: list[Item] = []
 
+    # --- 名前の付け方
+    v = {k: tk.StringVar() for k in ("name", "date", "test", "freq", "volt", "run")}
+    mode = tk.StringVar(value="free")
+    add_inst = tk.BooleanVar(value=True)
+    nfrm = ttk.LabelFrame(root, text="名前の付け方")
+    nfrm.pack(fill="x", padx=8, pady=(6, 0))
+    ttk.Radiobutton(nfrm, text="自由な名前", value="free", variable=mode).grid(row=0, column=0, padx=8, pady=4, sticky="w")
+    name_entry = ttk.Entry(nfrm, textvariable=v["name"], width=40, font=("", 11))
+    name_entry.grid(row=0, column=1, sticky="w")
+    ttk.Checkbutton(nfrm, text="後ろに機器名を付ける（_NRX など）", variable=add_inst).grid(row=0, column=2, padx=8)
+    ttk.Label(nfrm, text="例: アルミ_5000rpm_びびり有 → アルミ_5000rpm_びびり有_NRX.xlsx　"
+                         "（1件ずつ変えたいときは表の「新しい名前」をダブルクリック）",
+              foreground="#666").grid(row=1, column=1, columnspan=3, sticky="w", pady=(0, 4))
+    ttk.Radiobutton(nfrm, text="試験条件から作る（下の欄）", value="rule", variable=mode).grid(
+        row=2, column=0, columnspan=2, padx=8, pady=(0, 4), sticky="w")
+
+    def template() -> str:
+        if mode.get() == "free":
+            return FREE_TEMPLATE if add_inst.get() else FREE_TEMPLATE_NOINST
+        return tmpl.get()
+
     # --- 共通条件
-    top = ttk.LabelFrame(root, text="試験条件（全ファイル共通）")
+    top = ttk.LabelFrame(root, text="試験条件（「試験条件から作る」のとき使用）")
     top.pack(fill="x", padx=8, pady=6)
-    v = {k: tk.StringVar() for k in ("date", "test", "freq", "volt", "run")}
     v["date"].set(_dt.date.today().strftime("%Y%m%d"))
     v["run"].set("1")
     for col, (k, lab, w) in enumerate([("date", "日付", 10), ("test", "試験No", 6),
@@ -308,7 +330,7 @@ def main():
     ttk.Button(dfrm, text="選択…",
                command=lambda: dest.set(filedialog.askdirectory() or dest.get())).pack(side="left")
     mkdir_sub = tk.BooleanVar(value=False)
-    ttk.Checkbutton(dfrm, text="日付_試験No のサブフォルダを作る", variable=mkdir_sub).pack(side="left", padx=6)
+    ttk.Checkbutton(dfrm, text="日付_名前（試験No）のサブフォルダを作る", variable=mkdir_sub).pack(side="left", padx=6)
     move = tk.BooleanVar(value=False)
     ttk.Checkbutton(dfrm, text="移動（元を消す）", variable=move).pack(side="left", padx=6)
 
@@ -331,6 +353,8 @@ def main():
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         dest.set(cfg.get("dest", ""))
         tmpl.set(cfg.get("template", DEFAULT_TEMPLATE))
+        mode.set(cfg.get("mode", "free"))
+        add_inst.set(cfg.get("add_inst", True))
         xl_ext.set(cfg.get("xl_ext", ".xlsx"))
         also_csv.set(cfg.get("also_csv", True))
     except Exception:  # noqa: BLE001
@@ -339,7 +363,7 @@ def main():
     def save_cfg():
         try:
             import json
-            cfg_path.write_text(json.dumps({"dest": dest.get(), "template": tmpl.get(),
+            cfg_path.write_text(json.dumps({"dest": dest.get(), "template": tmpl.get(), "mode": mode.get(), "add_inst": add_inst.get(),
                                             "xl_ext": xl_ext.get(), "also_csv": also_csv.get()},
                                            ensure_ascii=False), encoding="utf-8")
         except Exception:  # noqa: BLE001
@@ -362,14 +386,15 @@ def main():
     def dest_dir() -> Path:
         d = Path(dest.get().strip() or ".")
         if mkdir_sub.get():
-            d = d / clean_name(f"{v['date'].get()}_{v['test'].get()}")
+            key = v["name"].get() if mode.get() == "free" else v["test"].get()
+            d = d / clean_name(f"{v['date'].get()}_{key}")
         return d
 
     def common():
         return {k: x.get() for k, x in v.items()}
 
     def refresh(*_):
-        pairs = plan(items, tmpl.get(), common(), dest_dir(), xl_ext.get(), also_csv.get())
+        pairs = plan(items, template(), common(), dest_dir(), xl_ext.get(), also_csv.get())
         tree.delete(*tree.get_children())
         for i, (it, dst) in enumerate(pairs):
             new = dst.name + (f"  ＋ {it.csv_dst.name}" if it.csv_dst else "")
@@ -377,7 +402,7 @@ def main():
                         values=(it.label, it.inst, it.memo, new))
         status.set(f"{len(items)} 件 → {dest_dir()}")
 
-    for x in list(v.values()) + [tmpl, dest, mkdir_sub, xl_ext, also_csv]:
+    for x in list(v.values()) + [tmpl, dest, mkdir_sub, xl_ext, also_csv, mode, add_inst]:
         x.trace_add("write", refresh)
 
     def add_paths(paths):
@@ -482,7 +507,7 @@ def main():
         if not dest.get().strip():
             messagebox.showwarning(APP_TITLE, "保存先フォルダを選んでください。")
             return
-        pairs = plan(items, tmpl.get(), common(), dest_dir(), xl_ext.get(), also_csv.get())
+        pairs = plan(items, template(), common(), dest_dir(), xl_ext.get(), also_csv.get())
         verb = "移動" if move.get() else "保存"
         if not messagebox.askokcancel(APP_TITLE, f"{len(pairs)} 件を {dest_dir()} に{verb}します。"):
             return
@@ -511,6 +536,7 @@ def main():
     ttk.Button(bar, text="一括保存 ▶", command=run).pack(side="right")
 
     refresh()
+    name_entry.focus_set()
     root.mainloop()
 
 
