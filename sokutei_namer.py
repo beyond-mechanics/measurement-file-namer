@@ -540,5 +540,33 @@ def main():
     root.mainloop()
 
 
+def _report_crash():
+    """exe（コンソールなし）でも原因が分かるよう、ログとダイアログで知らせる。"""
+    import sys
+    import traceback
+    msg = traceback.format_exc()
+    base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+    log = base / "sokutei_namer_error.log"
+    try:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"--- {_dt.datetime.now().isoformat(timespec='seconds')}\n{msg}\n")
+    except OSError:
+        pass
+    print(msg, file=sys.stderr)
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        r = tk.Tk()
+        r.withdraw()
+        messagebox.showerror(APP_TITLE, f"起動中にエラーが出ました。\n{log} を送ってください。\n\n{msg[-800:]}")
+        r.destroy()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:  # noqa: BLE001
+        _report_crash()
+        raise SystemExit(1)
