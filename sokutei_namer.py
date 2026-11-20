@@ -26,7 +26,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-APP_TITLE = "計測ファイル一括命名ツール v0.3"
+APP_TITLE = "計測ファイル一括命名ツール v0.4"
 DEFAULT_TEMPLATE = "{test}-{freq}-{volt}-{run}_{inst}"
 INST_PRESETS = ["NRX", "DS5100", "DYNO", "LK", "RP", ""]
 FREE_TEMPLATE = "{name}_{inst}"      # 「自由な名前」モード（機器名を付ける）
@@ -144,8 +144,82 @@ def plan(items: list[Item], template: str, common: dict, dest_dir: Path,
 
 
 # ---------------------------------------------------------------- 開いている Excel
+# pywin32 があればそれを使い、なければ Windows 標準の PowerShell 経由で Excel を操作する。
+# （社内プロキシで pip が使えない PC でも、追加インストールなしで動かすため）
+_PS_HEAD = (
+    "$ErrorActionPreference='Stop';"
+    "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+    "try{$xl=[Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application')}"
+    "catch{[Console]::Error.WriteLine('NO_EXCEL');exit 3};"
+)
+_PS_LIST = _PS_HEAD + (
+    "$out=@();"
+    "foreach($wb in $xl.Workbooks){"
+    " $t='';"
+    " try{foreach($c in $wb.Worksheets.Item(1).Range('A1:J10').Value2){if($c -ne $null){$t+=[string]$c+' '}}}catch{};"
+    " $out+=[pscustomobject]@{Name=[string]$wb.Name;Path=[string]$wb.Path;FullName=[string]$wb.FullName;Head=$t}"
+    "};"
+    "ConvertTo-Json -InputObject $out -Compress"
+)
+_PS_SAVE = _PS_HEAD + (
+    "$wb=$xl.Workbooks.Item($env:SN_NAME);"
+    "$old=$xl.DisplayAlerts;$xl.DisplayAlerts=$false;"
+    "try{"
+    " $wb.SaveAs($env:SN_DST,[int]$env:SN_FMT);"
+    " if($env:SN_CSV){$wb.Worksheets.Item(1).Copy();$t=$xl.ActiveWorkbook;$t.SaveAs($env:SN_CSV,6);$t.Close($false)};"
+    " if($env:SN_CLOSE -eq '1'){$wb.Close($false)}"
+    "}finally{$xl.DisplayAlerts=$old}"
+)
+
+
+@dataclass
+class PsWorkbook:
+    """PowerShell 経由で見つけたブック（pywin32 のブックと同じ名前の属性を持つ）。"""
+    Name: str
+    Path: str = ""
+    FullName: str = ""
+    head: str = ""
+
+
+def _run_ps(script: str, env_extra: dict | None = None) -> str:
+    import subprocess
+    env = dict(os.environ, **(env_extra or {}))
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                        "-Command", script], capture_output=True, env=env, creationflags=flags,
+                       timeout=120)
+    out = r.stdout.decode("utf-8", "replace").strip()
+    err = r.stderr.decode("utf-8", "replace").strip()
+    if r.returncode == 3 or "NO_EXCEL" in err:
+        return ""
+    if r.returncode != 0:
+        raise RuntimeError(err or f"PowerShell がエラーで終了しました（{r.returncode}）")
+    return out
+
+
+def _list_ps() -> list:
+    import json
+    out = _run_ps(_PS_LIST)
+    if not out:
+        return []
+    data = json.loads(out)
+    if isinstance(data, dict):   # 1件だけのとき配列にならないことがある
+        data = [data]
+    return [PsWorkbook(d.get("Name", ""), d.get("Path", "") or "", d.get("FullName", "") or "",
+                       d.get("Head", "") or "")
+            for d in data if not str(d.get("Name", "")).upper().startswith("PERSONAL")]
+
+
 def list_open_workbooks() -> list:
-    """起動中の全 Excel から開いているブックを集める（Windows + pywin32 が必要）。"""
+    """開いている Excel ブックの一覧。pywin32 がなければ PowerShell で探す。"""
+    try:
+        return _list_pywin32()
+    except ImportError:
+        return _list_ps()
+
+
+def _list_pywin32() -> list:
+    """起動中の全 Excel から開いているブックを集める（pywin32 版）。"""
     import pythoncom
     import win32com.client
 
@@ -188,6 +262,8 @@ def is_unsaved(wb) -> bool:
 
 def guess_instrument_wb(wb) -> str:
     """1枚目のシート左上から機器を推定。わからなければ NRX（Excel を直接開くのは NR-X 想定）。"""
+    if isinstance(wb, PsWorkbook):
+        return _inst_from_text(wb.head) or "NRX"
     try:
         vals = wb.Worksheets(1).Range("A1:J10").Value
         text = " ".join(str(c) for row in (vals or ()) for c in (row or ()) if c is not None)
@@ -198,6 +274,15 @@ def guess_instrument_wb(wb) -> str:
 
 def save_workbook(wb, dst: Path, csv_dst: Path | None = None, close: bool = False):
     """開いているブックを dst に保存（必要なら1枚目シートを CSV にも書き出す）。"""
+    if isinstance(wb, PsWorkbook):
+        _run_ps(_PS_SAVE, {
+            "SN_NAME": wb.Name,
+            "SN_DST": str(Path(dst).resolve()),
+            "SN_FMT": str(XL_FORMATS[Path(dst).suffix.lower()]),
+            "SN_CSV": str(Path(csv_dst).resolve()) if csv_dst is not None else "",
+            "SN_CLOSE": "1" if close else "0",
+        })
+        return
     app = wb.Application
     old = app.DisplayAlerts
     app.DisplayAlerts = False   # 「互換性」「マクロなし」などの確認を出さない
@@ -420,9 +505,8 @@ def main():
     def add_excel():
         try:
             wbs = list_open_workbooks()
-        except ImportError:
-            messagebox.showerror(APP_TITLE, "pywin32 が入っていません。\n"
-                                 "コマンドプロンプトで  pip install pywin32  を実行してください。")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror(APP_TITLE, f"Excel の一覧を取れませんでした。\n{e}")
             return
         have = {id(it.wb) for it in items if it.wb is not None}
         names_in = {str(it.wb.FullName) for it in items if it.wb is not None}
@@ -540,5 +624,33 @@ def main():
     root.mainloop()
 
 
+def _report_crash():
+    """exe（コンソールなし）でも原因が分かるよう、ログとダイアログで知らせる。"""
+    import sys
+    import traceback
+    msg = traceback.format_exc()
+    base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+    log = base / "sokutei_namer_error.log"
+    try:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"--- {_dt.datetime.now().isoformat(timespec='seconds')}\n{msg}\n")
+    except OSError:
+        pass
+    print(msg, file=sys.stderr)
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        r = tk.Tk()
+        r.withdraw()
+        messagebox.showerror(APP_TITLE, f"起動中にエラーが出ました。\n{log} を送ってください。\n\n{msg[-800:]}")
+        r.destroy()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:  # noqa: BLE001
+        _report_crash()
+        raise SystemExit(1)

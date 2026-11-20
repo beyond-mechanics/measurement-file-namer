@@ -113,3 +113,40 @@ def test_free_name_mode(tmp_path):
     items = [Item(src=Path("Book1"), inst="", wb=object()), Item(src=Path("Book2"), inst="", wb=object())]
     pairs = plan(items, FREE_TEMPLATE, dict(f, inst=""), tmp_path)
     assert [d.name for _, d in pairs] == ["アルミ 5000rpm_びびり有.xlsx", "アルミ 5000rpm_びびり有_2.xlsx"]
+
+
+# ---- pywin32 がない PC 向けの PowerShell 経路（PowerShell 呼び出しは差し替えて確認）
+def test_powershell_backend(tmp_path, monkeypatch):
+    import json
+    import sokutei_namer as sn
+    calls = []
+
+    def fake_ps(script, env=None):
+        calls.append((script, env))
+        if env is None:
+            return json.dumps({"Name": "Book1", "Path": "", "FullName": "Book1",
+                               "Head": "KEYENCE NR-X100 "})
+        Path(env["SN_DST"]).write_text("x")
+        if env["SN_CSV"]:
+            Path(env["SN_CSV"]).write_text("x")
+        return ""
+    monkeypatch.setattr(sn, "_run_ps", fake_ps)
+    monkeypatch.setattr(sn, "_list_pywin32", lambda: (_ for _ in ()).throw(ImportError()))
+
+    wbs = sn.list_open_workbooks()          # 1件だけ（dict）でも配列として扱う
+    assert [w.Name for w in wbs] == ["Book1"] and sn.is_unsaved(wbs[0])
+    assert sn.guess_instrument_wb(wbs[0]) == "NRX"
+    items = [Item(src=Path("Book1"), inst="NRX", wb=wbs[0])]
+    f = dict(COMMON, name="アルミ_5000rpm")
+    pairs = plan(items, sn.FREE_TEMPLATE, f, tmp_path, ".xlsx", also_csv=True)
+    ok, errs = execute(pairs)
+    assert ok == 1 and not errs, errs
+    env = calls[-1][1]
+    assert env["SN_NAME"] == "Book1" and env["SN_FMT"] == "51" and env["SN_CLOSE"] == "0"
+    assert env["SN_DST"].endswith("アルミ_5000rpm_NRX.xlsx") and env["SN_CSV"].endswith(".csv")
+
+
+def test_powershell_no_excel(monkeypatch):
+    import sokutei_namer as sn
+    monkeypatch.setattr(sn, "_run_ps", lambda *a, **k: "")
+    assert sn._list_ps() == []

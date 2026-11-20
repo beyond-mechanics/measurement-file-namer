@@ -1,7 +1,31 @@
 @echo off
-rem è¨ˆæ¸¬ãƒ•ã‚¡ã‚¤ãƒ«ä¸€æ‹¬å‘½åãƒ„ãƒ¼ãƒ«ã‚’ exe åŒ–ï¼ˆåˆå›ã®ã¿ pip ãŒå¿…è¦ï¼‰
-pip install pyinstaller tkinterdnd2 pywin32
-pyinstaller --onefile --noconsole --collect-all tkinterdnd2 --name SokuteiNamer sokutei_namer.py
+rem ==== exe ‚ğì‚éi1‰ñ‚¾‚¯Bpip ‚ªg‚¦‚éƒlƒbƒgƒ[ƒN‚ª•K—vB•’i‚Í start_app.bat ‚Å\•ªj ====
+cd /d "%~dp0"
+
+set "PY="
+where py >nul 2>nul && set "PY=py"
+if not defined PY where python >nul 2>nul && set "PY=python"
+if not defined PY (
+  echo [ƒGƒ‰[] Python ‚ªŒ©‚Â‚©‚è‚Ü‚¹‚ñB
+  pause
+  exit /b 1
+)
+
+%PY% -m pip install pyinstaller tkinterdnd2 pywin32
+if errorlevel 1 (
+  echo [ƒGƒ‰[] pip ‚Å•”•i‚ğ“ü‚ê‚ç‚ê‚Ü‚¹‚ñ‚Å‚µ‚½BƒvƒƒLƒVİ’è‚ğŠm”F‚µ‚Ä‚­‚¾‚³‚¢B
+  pause
+  exit /b 1
+)
+
+%PY% -m PyInstaller --noconfirm --onefile --noconsole --collect-all tkinterdnd2 --name SokuteiNamer sokutei_namer.py
+if errorlevel 1 (
+  echo [ƒGƒ‰[] exe ‚ğì‚ê‚Ü‚¹‚ñ‚Å‚µ‚½Bã‚ÌƒƒbƒZ[ƒW‚ğƒXƒNƒVƒ‡‚µ‚Ä‘—‚Á‚Ä‚­‚¾‚³‚¢B
+  pause
+  exit /b 1
+)
+
 echo.
-echo dist\SokuteiNamer.exe ãŒã§ãã¾ã—ãŸã€‚
+echo dist\SokuteiNamer.exe ‚ª‚Å‚«‚Ü‚µ‚½B‚±‚ê‚ğƒ_ƒuƒ‹ƒNƒŠƒbƒN‚·‚é‚Æ‹N“®‚µ‚Ü‚·B
+start "" "dist\SokuteiNamer.exe"
 pause
