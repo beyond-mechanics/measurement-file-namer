@@ -1,6 +1,6 @@
 @echo off
-chcp 65001 >nul
-rem ==== 計測ファイル一括命名ツールを起動する（ダブルクリック用） ====
+rem ==== �v���t�@�C���ꊇ�����c�[�����N������i�_�u���N���b�N�p�j ====
+rem �ǉ��̕��i�͕s�v�ł��iPython �W���@�\�� Windows �� PowerShell �����œ����܂��j�B
 cd /d "%~dp0"
 
 set "PY="
@@ -8,41 +8,29 @@ where py >nul 2>nul && set "PY=py"
 if not defined PY where python >nul 2>nul && set "PY=python"
 if not defined PY goto NOPY
 
-%PY% -c "import tkinter" >nul 2>nul || goto NOTK
+%PY% -c "import tkinter" >nul 2>nul
+if errorlevel 1 goto NOTK
 
-%PY% -c "import win32com.client, tkinterdnd2" >nul 2>nul
-if errorlevel 1 (
-  echo 初回のみ必要な部品 pywin32 と tkinterdnd2 を入れます...
-  %PY% -m pip install pywin32 tkinterdnd2
-  if errorlevel 1 goto PIPFAIL
-)
-
-echo アプリを起動します。この黒い画面は閉じないでください。
+echo �A�v�����N�����܂��B�g���Ă���ԁA���̍�����ʂ͕��Ȃ��ł��������B
 %PY% sokutei_namer.py
 if errorlevel 1 goto CRASH
 exit /b 0
 
 :NOPY
-echo [エラー] Python が見つかりません。
-echo   python.org から Python を入れるときに "Add python.exe to PATH" にチェックを入れてください。
+echo [�G���[] Python ��������܂���B
+echo   Python ������Ƃ��uAdd python.exe to PATH�v�Ƀ`�F�b�N�����Ă��������B
 pause
 exit /b 1
 
 :NOTK
-echo [エラー] この Python には tkinter が入っていません。
-echo   Python のインストーラーで "tcl/tk and IDLE" にチェックを入れて入れ直してください。
-pause
-exit /b 1
-
-:PIPFAIL
-echo [エラー] pip で部品を入れられませんでした。社内ネットワークのプロキシが原因のことが多いです。
-echo   例: %PY% -m pip install --proxy http://プロキシ:ポート pywin32 tkinterdnd2
+echo [�G���[] ���� Python �ɂ� tkinter �������Ă��܂���B
+echo   Python �̃C���X�g�[���[�Łutcl/tk and IDLE�v�Ƀ`�F�b�N�����ē��꒼���Ă��������B
 pause
 exit /b 1
 
 :CRASH
 echo.
-echo [エラー] アプリが止まりました。上の英語のメッセージをスクショして送ってください。
-echo   同じ内容が sokutei_namer_error.log にも残っています。
+echo [�G���[] �A�v�����~�܂�܂����B���̉�ʂ��X�N�V�����đ����Ă��������B
+echo   �������e�� sokutei_namer_error.log �ɂ��c���Ă��܂��B
 pause
 exit /b 1

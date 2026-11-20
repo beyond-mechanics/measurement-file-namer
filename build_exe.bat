@@ -1,32 +1,31 @@
 @echo off
-chcp 65001 >nul
-rem ==== è¨ˆæ¸¬ãƒ•ã‚¡ã‚¤ãƒ«ä¸€æ‹¬å‘½åãƒ„ãƒ¼ãƒ«ã‚’ exe ã«ã™ã‚‹ï¼ˆ1å›ã ã‘ã€‚æ™®æ®µã¯ start_app.bat ã§ååˆ†ï¼‰ ====
+rem ==== exe ‚ğì‚éi1‰ñ‚¾‚¯Bpip ‚ªg‚¦‚éƒlƒbƒgƒ[ƒN‚ª•K—vB•’i‚Í start_app.bat ‚Å\•ªj ====
 cd /d "%~dp0"
 
 set "PY="
 where py >nul 2>nul && set "PY=py"
 if not defined PY where python >nul 2>nul && set "PY=python"
 if not defined PY (
-  echo [ã‚¨ãƒ©ãƒ¼] Python ãŒè¦‹ã¤ã‹ã‚Šã¾ã›ã‚“ã€‚
+  echo [ƒGƒ‰[] Python ‚ªŒ©‚Â‚©‚è‚Ü‚¹‚ñB
   pause
   exit /b 1
 )
 
 %PY% -m pip install pyinstaller tkinterdnd2 pywin32
 if errorlevel 1 (
-  echo [ã‚¨ãƒ©ãƒ¼] pip ã§éƒ¨å“ã‚’å…¥ã‚Œã‚‰ã‚Œã¾ã›ã‚“ã§ã—ãŸã€‚ãƒ—ãƒ­ã‚­ã‚·è¨­å®šã‚’ç¢ºèªã—ã¦ãã ã•ã„ã€‚
+  echo [ƒGƒ‰[] pip ‚Å•”•i‚ğ“ü‚ê‚ç‚ê‚Ü‚¹‚ñ‚Å‚µ‚½BƒvƒƒLƒVİ’è‚ğŠm”F‚µ‚Ä‚­‚¾‚³‚¢B
   pause
   exit /b 1
 )
 
 %PY% -m PyInstaller --noconfirm --onefile --noconsole --collect-all tkinterdnd2 --name SokuteiNamer sokutei_namer.py
 if errorlevel 1 (
-  echo [ã‚¨ãƒ©ãƒ¼] exe ã‚’ä½œã‚Œã¾ã›ã‚“ã§ã—ãŸã€‚ä¸Šã®ãƒ¡ãƒƒã‚»ãƒ¼ã‚¸ã‚’ã‚¹ã‚¯ã‚·ãƒ§ã—ã¦é€ã£ã¦ãã ã•ã„ã€‚
+  echo [ƒGƒ‰[] exe ‚ğì‚ê‚Ü‚¹‚ñ‚Å‚µ‚½Bã‚ÌƒƒbƒZ[ƒW‚ğƒXƒNƒVƒ‡‚µ‚Ä‘—‚Á‚Ä‚­‚¾‚³‚¢B
   pause
   exit /b 1
 )
 
 echo.
-echo dist\SokuteiNamer.exe ãŒã§ãã¾ã—ãŸã€‚ã“ã‚Œã‚’ãƒ€ãƒ–ãƒ«ã‚¯ãƒªãƒƒã‚¯ã™ã‚‹ã¨èµ·å‹•ã—ã¾ã™ã€‚
+echo dist\SokuteiNamer.exe ‚ª‚Å‚«‚Ü‚µ‚½B‚±‚ê‚ğƒ_ƒuƒ‹ƒNƒŠƒbƒN‚·‚é‚Æ‹N“®‚µ‚Ü‚·B
 start "" "dist\SokuteiNamer.exe"
 pause

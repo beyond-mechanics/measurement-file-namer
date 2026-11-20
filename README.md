@@ -8,12 +8,13 @@
 ## 起動のしかた
 
 フォルダの中の **`start_app.bat` をダブルクリック** するだけです。
-初回は必要な部品（pywin32・tkinterdnd2）を自動で入れてから起動します。うまくいかないときは、黒い画面に出た
-メッセージか `sokutei_namer_error.log` を見てください。
+**追加のインストール（pip）は不要** です。Python 標準の tkinter と、Windows に最初から入っている PowerShell だけで動くので、
+社内プロキシで pip が通らない PC でも使えます。
 
-- `build_exe.bat` は「exe を作る」ためのもので、アプリそのものは起動しません（作り終わると exe を開きます）。
-  普段は `start_app.bat` で十分です。
-- 社内ネットワークで pip が通らない場合は `py -m pip install --proxy http://プロキシ:ポート pywin32 tkinterdnd2` を試してください。
+- 開いている Excel の操作は、pywin32 が入っていればそれを、なければ PowerShell を使います。
+- tkinterdnd2 が入っていればドラッグ＆ドロップも使えます（なくてもボタンから追加できます）。
+- `build_exe.bat` は exe を作るためのもので、PyInstaller を pip で入れるため、pip が通るネットワークが必要です。
+- バッチファイルは Windows の日本語環境で文字化けしないよう Shift_JIS（CP932）で保存しています（GitHub 上では文字化けして見えます）。
 
 ## 使い方（計測した直後、Excel が開いたままのとき）
 
